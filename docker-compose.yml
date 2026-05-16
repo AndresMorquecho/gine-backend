@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: gine-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: gine_user
+      POSTGRES_PASSWORD: gine_password
+      POSTGRES_DB: gine_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gine-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=postgresql://gine_user:gine_password@db:5432/gine_db
+      - PORT=3001
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      - db
+
+volumes:
+  postgres_data:
