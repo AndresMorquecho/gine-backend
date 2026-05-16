@@ -169,6 +169,97 @@ app.delete('/api/patients/:id', async (req, res) => {
   }
 });
 
+// --- CONSULTATIONS ---
+
+// Inicializar una nueva consulta (trae antecedentes y seguimiento previo)
+app.get('/api/patients/:id/init-consultation', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    // Detectar si es UUID o Cédula
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    
+    const patient = await prisma.patient.findFirst({
+      where: isUUID ? { id } : { numeroDocumento: id },
+      include: {
+        consultations: {
+          orderBy: { date: 'desc' },
+          take: 1
+        }
+      }
+    });
+
+    if (!patient) {
+      return res.status(404).json({ message: 'Paciente no encontrada' });
+    }
+
+    const lastConsultation = patient.consultations[0] || null;
+
+    // Retornamos la estructura para una nueva consulta
+    res.json({
+      patient: {
+        id: patient.id,
+        nombres: patient.nombres,
+        apellidos: patient.apellidos,
+        numeroDocumento: patient.numeroDocumento,
+        antecedentes: patient.antecedentes || '',
+      },
+      lastFollowUp: lastConsultation?.followUp || '',
+      consecutive: (await prisma.consultation.count({ where: { patientId: patient.id } })) + 1
+    });
+  } catch (error) {
+    console.error('Error al inicializar consulta:', error);
+    res.status(500).json({ error: 'Error al preparar la consulta' });
+  }
+});
+
+// Guardar una nueva consulta
+app.post('/api/consultations', async (req, res) => {
+  try {
+    const data = req.body;
+    
+    const consultation = await prisma.consultation.create({
+      data: {
+        patientId: data.patientId,
+        type: data.type || "Consulta Ginecología",
+        reason: data.reason,
+        evolution: data.evolution,
+        physicalExam: data.physicalExam,
+        diagnosis: data.diagnosis,
+        treatmentPlan: data.treatmentPlan,
+        followUp: data.followUp,
+        pressure: data.pressure,
+        weight: data.weight,
+        height: data.height,
+        heartRate: data.heartRate,
+        temp: data.temp,
+        saturacion: data.saturacion,
+        doctor: data.doctor || "Dr. Andres Morquecho",
+        notes: data.notes
+      }
+    });
+
+    res.status(201).json(consultation);
+  } catch (error) {
+    console.error('Error al guardar consulta:', error);
+    res.status(500).json({ error: 'Error al guardar la consulta médica' });
+  }
+});
+
+// Obtener historial de consultas de un paciente
+app.get('/api/consultations/patient/:patientId', async (req, res) => {
+  const { patientId } = req.params;
+  try {
+    const consultations = await prisma.consultation.findMany({
+      where: { patientId },
+      orderBy: { date: 'desc' }
+    });
+    res.json(consultations);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener el historial' });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`🚀 Server ready at http://localhost:${PORT}`);
+  console.log(`Servidor corriendo en puerto ${PORT}`);
 });

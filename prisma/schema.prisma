@@ -49,13 +49,25 @@ model Consultation {
   id              String   @id @default(uuid())
   patientId       String
   date            DateTime @default(now())
-  type            String   // Ej: "Control Prenatal", "Consulta Ginecología"
+  type            String   @default("Consulta Ginecología") // Ej: "Control Prenatal", "Consulta Ginecología"
   reason          String?  // Motivo de consulta
+  evolution       String?  // Enfermedad Actual / Evolución
+  physicalExam    String?  // Exploración Física
   diagnosis       String?  // Diagnóstico / Resumen
+  treatmentPlan   String?  // Plan y tratamiento
+  followUp        String?  // Notas de seguimiento para la próxima consulta
+  
+  // Signos Vitales
   pressure        String?  // Presión Arterial
-  weight          String?  // Peso
+  weight          String?  // Peso (kg)
+  height          String?  // Talla (cm)
+  heartRate       String?  // Frecuencia Cardíaca
+  temp            String?  // Temperatura
+  saturacion      String?  // Saturación O2
+  
   doctor          String?  // Nombre del doctor
-  notes           String?  // Notas adicionales
+  notes           String?  // Notas adicionales internas
+  
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
