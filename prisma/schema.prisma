@@ -408,20 +408,27 @@ model MedicalOrderItem {
 // ==========================================
 
 model BusinessSettings {
-  id                String   @id @default("default")
-  clinicName        String?
-  taxId             String?
-  address           String?
-  phone             String?
-  email             String?
-  logoUrl           String?  @db.Text
-  reportHeader      String?  @db.Text
-  reportFooter      String?  @db.Text
-  billingSeries     String?
-  billingNextNumber Int      @default(1)
-  currency          String   @default("USD")
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                        String   @id @default("default")
+  clinicName                String?
+  taxId                     String?
+  address                   String?
+  phone                     String?
+  email                     String?
+  logoUrl                   String?  @db.Text
+  reportHeader              String?  @db.Text
+  reportFooter              String?  @db.Text
+  billingSeries             String?
+  billingNextNumber         Int      @default(1)
+  currency                  String   @default("USD")
+  recipeDoctorName          String?
+  recipeDoctorSpecialty     String?
+  recipeDoctorAcess         String?
+  recipeDefaultCity         String?
+  recipeDefaultAllergies    String?
+  recipeDefaultValidityDays String?
+  recipeLogoUrl             String?  @db.Text
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
 
   @@map("business_settings")
 }
@@ -435,3 +442,61 @@ model SiteSettings {
 
   @@map("site_settings")
 }
+
+// ==========================================
+// MEDICAMENTOS Y CONFIGURACIONES DE RECETA
+// ==========================================
+
+model Medicine {
+  id               String   @id @default(uuid())
+  genericName      String   @unique
+  brandNames       String[]
+  presentations    String[]
+  concentrations   String[]
+  defaultDose      String?
+  defaultFrequency String?
+  defaultDuration  String?
+  defaultRoute     String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("medicines")
+}
+
+model Prescription {
+  id              String   @id @default(uuid())
+  secuencial      String   @unique
+  date            String
+  patientId       String
+  patientName     String
+  medicinesCount  Int
+  status          String   @default("Emitida") // Emitida | Vencida | Anulada
+  medicines       Json     // Store full list of medicines as JSON
+  vigencia        String?
+  vigenciaTipo    String?
+  diagnostico     String?
+  cie10           String?
+  alergias        String?
+  doctor          Json?    // Store doctor details as JSON
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("prescriptions")
+}
+
+model Appointment {
+  id          String   @id @default(uuid())
+  date        String   // YYYY-MM-DD
+  time        String   // HH:MM
+  patientName String
+  patientAge  String
+  doctorName  String
+  reason      String
+  type        String   // Control | Ecografía | Ginecología | Consulta | etc.
+  status      String   @default("Agendada") // Agendada | Confirmada | Sala de espera | En consultorio | En atención | Finalizada | Cancelada | No asistió
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("appointments")
+}
+

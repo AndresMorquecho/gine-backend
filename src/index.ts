@@ -35,6 +35,13 @@ const defaultBusinessSettingsData = {
   billingSeries: 'FAC',
   billingNextNumber: 1,
   currency: 'USD',
+  recipeDoctorName: 'Dra. Ana García',
+  recipeDoctorSpecialty: 'Ginecología y Obstetricia',
+  recipeDoctorAcess: '7456-2026',
+  recipeDefaultCity: 'Quito',
+  recipeDefaultAllergies: 'Ninguna conocida',
+  recipeDefaultValidityDays: '3',
+  recipeLogoUrl: null as string | null,
 };
 
 function serializeBusinessSettings(row: {
@@ -50,6 +57,13 @@ function serializeBusinessSettings(row: {
   billingSeries: string | null;
   billingNextNumber: number;
   currency: string;
+  recipeDoctorName: string | null;
+  recipeDoctorSpecialty: string | null;
+  recipeDoctorAcess: string | null;
+  recipeDefaultCity: string | null;
+  recipeDefaultAllergies: string | null;
+  recipeDefaultValidityDays: string | null;
+  recipeLogoUrl: string | null;
 }) {
   return {
     id: row.id,
@@ -64,6 +78,13 @@ function serializeBusinessSettings(row: {
     billingSeries: row.billingSeries,
     billingNextNumber: row.billingNextNumber,
     currency: row.currency,
+    recipeDoctorName: row.recipeDoctorName,
+    recipeDoctorSpecialty: row.recipeDoctorSpecialty,
+    recipeDoctorAcess: row.recipeDoctorAcess,
+    recipeDefaultCity: row.recipeDefaultCity,
+    recipeDefaultAllergies: row.recipeDefaultAllergies,
+    recipeDefaultValidityDays: row.recipeDefaultValidityDays,
+    recipeLogoUrl: row.recipeLogoUrl,
   };
 }
 
@@ -386,7 +407,15 @@ app.get('/api/patients/:id', async (req, res) => {
       console.log('Detectado formato UUID, buscando por ID...');
       patient = await prisma.patient.findUnique({
         where: { id },
-        include: { consultations: { orderBy: { date: 'desc' } } }
+        include: {
+          consultations: {
+            orderBy: { date: 'desc' },
+            include: {
+              vitalSigns: true,
+              gynecology: true
+            }
+          }
+        }
       });
     } 
     
@@ -394,7 +423,15 @@ app.get('/api/patients/:id', async (req, res) => {
       console.log('Buscando por Numero de Documento...');
       patient = await prisma.patient.findFirst({
         where: { numeroDocumento: id },
-        include: { consultations: { orderBy: { date: 'desc' } } }
+        include: {
+          consultations: {
+            orderBy: { date: 'desc' },
+            include: {
+              vitalSigns: true,
+              gynecology: true
+            }
+          }
+        }
       });
     }
 
@@ -1645,7 +1682,7 @@ app.post('/api/pregnancies/:pregnancyId/echographies', upload.fields([
 
     const echo = await prisma.pregnancyEchography.create({
       data: {
-        pregnancyId,
+        pregnancyId: pregnancyId as string,
         studyDate: new Date(studyDate),
         studyType: studyType || 'otro',
         gestationalAge: gestationalAge ? parseFloat(gestationalAge) : undefined,
@@ -1754,6 +1791,13 @@ app.post('/api/settings', async (req, res) => {
       billingSeries,
       billingNextNumber,
       currency,
+      recipeDoctorName,
+      recipeDoctorSpecialty,
+      recipeDoctorAcess,
+      recipeDefaultCity,
+      recipeDefaultAllergies,
+      recipeDefaultValidityDays,
+      recipeLogoUrl,
     } = req.body ?? {};
 
     const data: Record<string, unknown> = {};
@@ -1773,6 +1817,13 @@ app.post('/api/settings', async (req, res) => {
     if (currency !== undefined && typeof currency === 'string' && currency.trim()) {
       data.currency = currency.trim();
     }
+    if (recipeDoctorName !== undefined) data.recipeDoctorName = recipeDoctorName ?? null;
+    if (recipeDoctorSpecialty !== undefined) data.recipeDoctorSpecialty = recipeDoctorSpecialty ?? null;
+    if (recipeDoctorAcess !== undefined) data.recipeDoctorAcess = recipeDoctorAcess ?? null;
+    if (recipeDefaultCity !== undefined) data.recipeDefaultCity = recipeDefaultCity ?? null;
+    if (recipeDefaultAllergies !== undefined) data.recipeDefaultAllergies = recipeDefaultAllergies ?? null;
+    if (recipeDefaultValidityDays !== undefined) data.recipeDefaultValidityDays = recipeDefaultValidityDays ?? null;
+    if (recipeLogoUrl !== undefined) data.recipeLogoUrl = recipeLogoUrl ?? null;
 
     const settings = await prisma.businessSettings.upsert({
       where: { id: BUSINESS_SETTINGS_ID },
@@ -1788,6 +1839,356 @@ app.post('/api/settings', async (req, res) => {
   } catch (error) {
     console.error('Error al guardar configuración:', error);
     res.status(500).json({ error: 'Error al guardar la configuración' });
+  }
+});
+
+// ==========================================
+// MEDICAMENTOS Y CONFIGURACIONES DE RECETA
+// ==========================================
+
+const DEFAULT_MEDICINES = [
+  {
+    genericName: 'Paracetamol',
+    brandNames: ['Termofin', 'Umbral', 'Tempra'],
+    presentations: ['Tableta', 'Jarabe', 'Gotas'],
+    concentrations: ['500 mg', '1 g', '120 mg / 5 mL'],
+    defaultDose: '1 tableta',
+    defaultFrequency: 'Cada 8 horas',
+    defaultDuration: '3 días',
+    defaultRoute: 'Oral'
+  },
+  {
+    genericName: 'Ibuprofeno',
+    brandNames: ['Advil', 'Motrin', 'Actron'],
+    presentations: ['Cápsula blanda', 'Tableta', 'Suspensión'],
+    concentrations: ['400 mg', '600 mg', '800 mg'],
+    defaultDose: '1 cápsula',
+    defaultFrequency: 'Cada 8 horas',
+    defaultDuration: '5 días',
+    defaultRoute: 'Oral'
+  },
+  {
+    genericName: 'Ácido Fólico',
+    brandNames: ['Folifem', 'Folivital', 'Folidex'],
+    presentations: ['Tableta'],
+    concentrations: ['1 mg', '5 mg'],
+    defaultDose: '1 tableta',
+    defaultFrequency: 'Cada 24 horas (mañana)',
+    defaultDuration: '30 días',
+    defaultRoute: 'Oral'
+  },
+  {
+    genericName: 'Hierro + Ácido Fólico',
+    brandNames: ['Maltofer Fol', 'Ferro-Folic', 'Intrafer'],
+    presentations: ['Tableta masticable', 'Cápsula'],
+    concentrations: ['100 mg / 0.35 mg'],
+    defaultDose: '1 tableta',
+    defaultFrequency: 'Cada 24 horas (noche)',
+    defaultDuration: '60 días',
+    defaultRoute: 'Oral'
+  },
+  {
+    genericName: 'Clotrimazol',
+    brandNames: ['Canesten', 'Gine-Canesten', 'Clotrimed'],
+    presentations: ['Óvulo vaginal', 'Crema vaginal'],
+    concentrations: ['100 mg', '500 mg', '2% crema'],
+    defaultDose: '1 óvulo',
+    defaultFrequency: 'Cada 24 horas (antes de acostarse)',
+    defaultDuration: '6 días',
+    defaultRoute: 'Vaginal'
+  },
+  {
+    genericName: 'Progesterona',
+    brandNames: ['Utrogestan', 'Geslutin', 'Progendo'],
+    presentations: ['Cápsula blanda'],
+    concentrations: ['100 mg', '200 mg'],
+    defaultDose: '1 cápsula',
+    defaultFrequency: 'Cada 24 horas (antes de acostarse)',
+    defaultDuration: '14 días',
+    defaultRoute: 'Vaginal'
+  }
+];
+
+async function seedMedicinesIfEmpty() {
+  try {
+    const count = await (prisma as any).medicine.count();
+    if (count === 0) {
+      console.log('Seeding default medicines...');
+      for (const med of DEFAULT_MEDICINES) {
+        await (prisma as any).medicine.create({ data: med });
+      }
+      console.log('Seed of medicines completed successfully.');
+    }
+  } catch (err) {
+    console.error('Error seeding medicines:', err);
+  }
+}
+
+app.get('/api/medicines', async (req, res) => {
+  try {
+    await seedMedicinesIfEmpty();
+    const list = await (prisma as any).medicine.findMany({
+      orderBy: { genericName: 'asc' }
+    });
+    res.json(list);
+  } catch (error) {
+    console.error('Error listing medicines:', error);
+    res.status(500).json({ error: 'Error al listar los medicamentos' });
+  }
+});
+
+app.post('/api/medicines', async (req, res) => {
+  try {
+    const {
+      genericName,
+      brandNames,
+      presentations,
+      concentrations,
+      defaultDose,
+      defaultFrequency,
+      defaultDuration,
+      defaultRoute
+    } = req.body ?? {};
+
+    if (!genericName || typeof genericName !== 'string' || !genericName.trim()) {
+      return res.status(400).json({ error: 'El nombre genérico es requerido' });
+    }
+
+    const created = await (prisma as any).medicine.create({
+      data: {
+        genericName: genericName.trim(),
+        brandNames: Array.isArray(brandNames) ? brandNames : [],
+        presentations: Array.isArray(presentations) ? presentations : [],
+        concentrations: Array.isArray(concentrations) ? concentrations : [],
+        defaultDose: defaultDose ?? null,
+        defaultFrequency: defaultFrequency ?? null,
+        defaultDuration: defaultDuration ?? null,
+        defaultRoute: defaultRoute ?? null
+      }
+    });
+
+    res.json(created);
+  } catch (error: any) {
+    console.error('Error creating medicine:', error);
+    if (error.code === 'P2002') {
+      return res.status(400).json({ error: 'Ya existe un medicamento con ese nombre genérico' });
+    }
+    res.status(500).json({ error: 'Error al crear el medicamento' });
+  }
+});
+
+app.put('/api/medicines/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      genericName,
+      brandNames,
+      presentations,
+      concentrations,
+      defaultDose,
+      defaultFrequency,
+      defaultDuration,
+      defaultRoute
+    } = req.body ?? {};
+
+    const updated = await (prisma as any).medicine.update({
+      where: { id },
+      data: {
+        genericName: genericName ? genericName.trim() : undefined,
+        brandNames: Array.isArray(brandNames) ? brandNames : undefined,
+        presentations: Array.isArray(presentations) ? presentations : undefined,
+        concentrations: Array.isArray(concentrations) ? concentrations : undefined,
+        defaultDose: defaultDose !== undefined ? defaultDose : undefined,
+        defaultFrequency: defaultFrequency !== undefined ? defaultFrequency : undefined,
+        defaultDuration: defaultDuration !== undefined ? defaultDuration : undefined,
+        defaultRoute: defaultRoute !== undefined ? defaultRoute : undefined
+      }
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error updating medicine:', error);
+    res.status(500).json({ error: 'Error al actualizar el medicamento' });
+  }
+});
+
+app.delete('/api/medicines/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await (prisma as any).medicine.delete({
+      where: { id }
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting medicine:', error);
+    res.status(500).json({ error: 'Error al eliminar el medicamento' });
+  }
+});
+
+// ==========================================
+// MÓDULO DE PRESCRIPCIONES / RECETAS
+// ==========================================
+
+app.get('/api/prescriptions', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+    const search = (req.query.search as string) || '';
+    const status = (req.query.status as string) || '';
+    const patientId = (req.query.patientId as string) || '';
+
+    const where: any = {};
+    
+    if (patientId) {
+      where.patientId = patientId;
+    }
+    
+    if (search) {
+      where.OR = [
+        { patientName: { contains: search, mode: 'insensitive' } },
+        { secuencial: { contains: search, mode: 'insensitive' } }
+      ];
+    }
+
+    if (status && status !== 'Todos los Estados') {
+      let statusMapped = status;
+      if (status === 'Emitidas' || status === 'Emitida') statusMapped = 'Emitida';
+      if (status === 'Vencidas' || status === 'Vencida') statusMapped = 'Vencida';
+      if (status === 'Anuladas' || status === 'Anulada') statusMapped = 'Anulada';
+      where.status = statusMapped;
+    }
+
+    const [prescriptions, total] = await Promise.all([
+      prisma.prescription.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.prescription.count({ where })
+    ]);
+
+    res.json({
+      data: prescriptions,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error: any) {
+    console.error('Error fetching prescriptions:', error?.message);
+    res.status(500).json({ error: 'Error fetching prescriptions', detail: error?.message });
+  }
+});
+
+app.post('/api/prescriptions', async (req, res) => {
+  try {
+    const body = req.body;
+    
+    const newPrescription = await prisma.prescription.create({
+      data: {
+        secuencial: body.secuencial || body.id || `REC-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+        date: body.date || new Date().toLocaleDateString('es-EC'),
+        patientId: body.patientId,
+        patientName: body.patientName,
+        medicinesCount: body.medicinesCount || (body.medicines ? body.medicines.length : 0),
+        status: body.status || 'Emitida',
+        medicines: body.medicines || [],
+        vigencia: body.vigencia || '3',
+        vigenciaTipo: body.vigenciaTipo || 'Días',
+        diagnostico: body.diagnostico || '',
+        cie10: body.cie10 || '',
+        alergias: body.alergias || 'Ninguna conocida',
+        doctor: body.doctor || {}
+      }
+    });
+
+    res.status(201).json(newPrescription);
+  } catch (error: any) {
+    console.error('Error creating prescription:', error?.message);
+    res.status(500).json({ error: 'Error creating prescription', detail: error?.message });
+  }
+});
+
+/* ==================================================
+   APPOINTMENTS (AGENDA) CRUD ENDPOINTS
+   ================================================== */
+
+app.get('/api/appointments', async (req, res) => {
+  try {
+    const appointments = await prisma.appointment.findMany({
+      orderBy: [
+        { date: 'asc' },
+        { time: 'asc' }
+      ]
+    });
+    res.json(appointments);
+  } catch (error: any) {
+    console.error('Error fetching appointments:', error?.message);
+    res.status(500).json({ error: 'Error fetching appointments', detail: error?.message });
+  }
+});
+
+app.post('/api/appointments', async (req, res) => {
+  try {
+    const body = req.body;
+    const newAppointment = await prisma.appointment.create({
+      data: {
+        date: body.date,
+        time: body.time,
+        patientName: body.patientName,
+        patientAge: body.patientAge || '30',
+        doctorName: body.doctorName,
+        reason: body.reason || 'Consulta General',
+        type: body.type || 'Consulta',
+        status: body.status || 'Agendada'
+      }
+    });
+    res.status(201).json(newAppointment);
+  } catch (error: any) {
+    console.error('Error creating appointment:', error?.message);
+    res.status(500).json({ error: 'Error creating appointment', detail: error?.message });
+  }
+});
+
+app.patch('/api/appointments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body;
+    
+    // Build update payload dynamically
+    const updateData: any = {};
+    if (body.date !== undefined) updateData.date = body.date;
+    if (body.time !== undefined) updateData.time = body.time;
+    if (body.patientName !== undefined) updateData.patientName = body.patientName;
+    if (body.patientAge !== undefined) updateData.patientAge = body.patientAge;
+    if (body.doctorName !== undefined) updateData.doctorName = body.doctorName;
+    if (body.reason !== undefined) updateData.reason = body.reason;
+    if (body.type !== undefined) updateData.type = body.type;
+    if (body.status !== undefined) updateData.status = body.status;
+
+    const updatedAppointment = await prisma.appointment.update({
+      where: { id },
+      data: updateData
+    });
+    res.json(updatedAppointment);
+  } catch (error: any) {
+    console.error('Error updating appointment:', error?.message);
+    res.status(500).json({ error: 'Error updating appointment', detail: error?.message });
+  }
+});
+
+app.delete('/api/appointments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.appointment.delete({
+      where: { id }
+    });
+    res.status(204).send();
+  } catch (error: any) {
+    console.error('Error deleting appointment:', error?.message);
+    res.status(500).json({ error: 'Error deleting appointment', detail: error?.message });
   }
 });
 
