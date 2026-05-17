@@ -75,3 +75,22 @@ model Consultation {
 
   @@map("consultations")
 }
+
+model BusinessSetting {
+  id                 String   @id @default("default")
+  clinicName         String?
+  taxId              String?  // RUC/NIT/DNI
+  address            String?
+  phone              String?
+  email              String?
+  logoUrl            String?
+  reportHeader       String?
+  reportFooter       String?
+  billingSeries      String?  // Ej: F001
+  billingNextNumber  Int      @default(1)
+  currency           String   @default("USD")
+  updatedAt          DateTime @updatedAt
+
+  @@map("business_settings")
+}
+

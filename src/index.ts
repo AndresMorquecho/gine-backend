@@ -8,10 +8,25 @@ import { PrismaClient } from '@prisma/client';
 dotenv.config();
 
 const app = express();
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const dbUrl = process.env.DATABASE_URL || '';
+const pool = new Pool({ connectionString: dbUrl });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 const PORT = process.env.PORT || 3001;
+
+// Diagnóstico de conexión en el arranque
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error('CRITICAL: No se pudo conectar a PostgreSQL en el arranque:', err.message);
+  } else {
+    console.log('CONEXIÓN EXITOSA: Conectado a PostgreSQL en puerto 5433');
+    // Prueba de consulta rápida
+    prisma.patient.findMany({ take: 1 })
+      .then(() => console.log('PRISMA TEST: Consulta exitosa'))
+      .catch((err: any) => console.error('PRISMA TEST: Error en consulta:', err.message));
+    release();
+  }
+});
 
 app.use(cors());
 app.use(express.json());
@@ -28,8 +43,13 @@ app.get('/api/patients', async (req, res) => {
       orderBy: { createdAt: 'desc' },
     });
     res.json(patients);
-  } catch (error) {
-    res.status(500).json({ error: 'Error fetching patients' });
+  } catch (error: any) {
+    console.error('ERROR EN /api/patients:', error);
+    res.status(500).json({ 
+      error: 'Error fetching patients', 
+      details: error.message,
+      stack: error.stack 
+    });
   }
 });
 
@@ -83,6 +103,7 @@ app.get('/api/patients/:id/consultations', async (req, res) => {
     });
     res.json(consultations);
   } catch (error) {
+    console.error('Error fetching consultations:', error);
     res.status(500).json({ error: 'Error fetching consultations' });
   }
 });
@@ -257,6 +278,41 @@ app.get('/api/consultations/patient/:patientId', async (req, res) => {
     res.json(consultations);
   } catch (error) {
     res.status(500).json({ error: 'Error al obtener el historial' });
+  }
+});
+
+// Business Settings
+app.get('/api/settings', async (req, res) => {
+  try {
+    let settings = await prisma.businessSetting.findUnique({
+      where: { id: 'default' }
+    });
+    
+    if (!settings) {
+      // Create default settings if they don't exist
+      settings = await prisma.businessSetting.create({
+        data: { id: 'default', clinicName: 'GineSaaS' }
+      });
+    }
+    
+    res.json(settings);
+  } catch (error) {
+    console.error('Error fetching settings:', error);
+    res.status(500).json({ error: 'Error fetching settings' });
+  }
+});
+
+app.post('/api/settings', async (req, res) => {
+  try {
+    const data = req.body;
+    const settings = await prisma.businessSetting.upsert({
+      where: { id: 'default' },
+      update: data,
+      create: { ...data, id: 'default' }
+    });
+    res.json(settings);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Error updating settings' });
   }
 });
 
