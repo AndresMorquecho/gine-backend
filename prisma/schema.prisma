@@ -402,3 +402,36 @@ model MedicalOrderItem {
 
   @@map("medical_order_items")
 }
+
+// ==========================================
+// CONFIGURACIÓN DE CLÍNICA (singleton)
+// ==========================================
+
+model BusinessSettings {
+  id                String   @id @default("default")
+  clinicName        String?
+  taxId             String?
+  address           String?
+  phone             String?
+  email             String?
+  logoUrl           String?  @db.Text
+  reportHeader      String?  @db.Text
+  reportFooter      String?  @db.Text
+  billingSeries     String?
+  billingNextNumber Int      @default(1)
+  currency          String   @default("USD")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("business_settings")
+}
+
+// Landing pública: marca, hero, servicios, CTA, pie (JSON)
+model SiteSettings {
+  id        String   @id @default("default")
+  config    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("site_settings")
+}
