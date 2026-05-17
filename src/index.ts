@@ -299,8 +299,9 @@ app.get('/api/patients', async (req, res) => {
       orderBy: { createdAt: 'desc' },
     });
     res.json(patients);
-  } catch (error) {
-    res.status(500).json({ error: 'Error fetching patients' });
+  } catch (error: any) {
+    console.error('Error fetching patients DETAIL:', error?.message, error?.code);
+    res.status(500).json({ error: 'Error fetching patients', detail: error?.message });
   }
 });
 
@@ -371,14 +372,11 @@ app.post('/api/patients', async (req, res) => {
     const data = req.body;
     
     // Prepare data
+    const { gestas, partos, cesareas, abortos, ...rest } = data;
     const formattedData = {
-      ...data,
+      ...rest,
       fechaNacimiento: data.fechaNacimiento ? new Date(data.fechaNacimiento) : new Date(),
       fechaRegistro: data.fechaRegistro ? new Date(data.fechaRegistro) : new Date(),
-      gestas: data.gestas ? parseInt(data.gestas) : 0,
-      partos: data.partos ? parseInt(data.partos) : 0,
-      cesareas: data.cesareas ? parseInt(data.cesareas) : 0,
-      abortos: data.abortos ? parseInt(data.abortos) : 0,
     };
 
     const patient = await prisma.patient.create({ data: formattedData });
@@ -395,13 +393,10 @@ app.patch('/api/patients/:id', async (req, res) => {
     const data = req.body;
 
     // Prepare data if present
-    const formattedData: any = { ...data };
+    const { gestas, partos, cesareas, abortos, ...rest } = data;
+    const formattedData: any = { ...rest };
     if (data.fechaNacimiento) formattedData.fechaNacimiento = new Date(data.fechaNacimiento);
     if (data.fechaRegistro) formattedData.fechaRegistro = new Date(data.fechaRegistro);
-    if (data.gestas !== undefined) formattedData.gestas = parseInt(data.gestas);
-    if (data.partos !== undefined) formattedData.partos = parseInt(data.partos);
-    if (data.cesareas !== undefined) formattedData.cesareas = parseInt(data.cesareas);
-    if (data.abortos !== undefined) formattedData.abortos = parseInt(data.abortos);
 
     const patient = await prisma.patient.update({
       where: { id },
@@ -422,6 +417,40 @@ app.delete('/api/patients/:id', async (req, res) => {
     res.status(500).json({ error: 'Error deleting patient' });
   }
 });
+
+function parseDateSafely(val: any): Date | null {
+  if (!val) return null;
+  
+  if (val instanceof Date) {
+    return isNaN(val.getTime()) ? null : val;
+  }
+
+  // Try standard parse
+  let d = new Date(val);
+  if (!isNaN(d.getTime())) return d;
+
+  // Try Spanish format like "19 de febrero de 2027"
+  if (typeof val === 'string') {
+    const months: { [key: string]: number } = {
+      enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5,
+      julio: 6, agosto: 7, septiembre: 8, octubre: 9, noviembre: 10, diciembre: 11
+    };
+    
+    // Match "DD de MONTH de YYYY" (case insensitive)
+    const match = val.toLowerCase().match(/(\d+)\s+de\s+([a-zñ]+)\s+de\s+(\d+)/);
+    if (match) {
+      const day = parseInt(match[1], 10);
+      const monthName = match[2];
+      const year = parseInt(match[3], 10);
+      if (months[monthName] !== undefined) {
+        const parsed = new Date(year, months[monthName], day);
+        if (!isNaN(parsed.getTime())) return parsed;
+      }
+    }
+  }
+
+  return null;
+}
 
 // --- CONSULTATIONS V2 (Professional Clinical Architecture) ---
 
@@ -465,10 +494,8 @@ app.get('/api/patients/:id/init-consultation', async (req, res) => {
       },
       inheritance: {
         lastFollowUp: last?.treatment?.followUp || '',
-        lastFum: last?.gynecology?.fum || null,
         lastWeight: last?.vitalSigns?.weight || '',
         lastPressure: last?.vitalSigns?.pressure || '',
-        lastFcf: last?.vitalSigns?.fcf || '',
         consecutive: (await prisma.consultation.count({ where: { patientId: patient.id } })) + 1
       },
       // Estado inicial vacío para la nueva consulta
@@ -477,8 +504,7 @@ app.get('/api/patients/:id/init-consultation', async (req, res) => {
         reason: last?.treatment?.followUp ? `SEGUIMIENTO: ${last.treatment.followUp}` : '',
         evolution: '',
         vitalSigns: {
-          weight: '', pressure: '', heartRate: '', respRate: '', temp: '', saturacion: '', bmi: '',
-          alturaUterina: '', fcf: '', movFetales: '', edema: '', contracciones: ''
+          weight: '', pressure: '', heartRate: '', respRate: '', temp: '', saturacion: '', bmi: ''
         },
         gynecology: {
           fum: last?.gynecology?.fum || null,
@@ -490,13 +516,6 @@ app.get('/api/patients/:id/init-consultation', async (req, res) => {
           metodo: last?.gynecology?.metodo || 'Ninguno',
           vidaSexualActiva: last?.gynecology?.vidaSexualActiva ?? true,
           sintomasMenstruales: last?.gynecology?.sintomasMenstruales || '',
-          gestas: last?.gynecology?.gestas || 0,
-          partos: last?.gynecology?.partos || 0,
-          cesareas: last?.gynecology?.cesareas || 0,
-          abortos: last?.gynecology?.abortos || 0,
-          hijosVivos: last?.gynecology?.hijosVivos || 0,
-          ectopicos: last?.gynecology?.ectopicos || 0,
-          fechaUltimoParto: last?.gynecology?.fechaUltimoParto || null,
           papUltimo: last?.gynecology?.papUltimo || null,
           papResultado: last?.gynecology?.papResultado || '',
           colposcopia: last?.gynecology?.colposcopia || '',
@@ -744,23 +763,23 @@ app.post('/api/consultations/:id', async (req, res) => {
       }
 
       // 3. Actualizar/Crear Ginecología
+      // 3. Actualizar/Crear Ginecología
       if (gynecology) {
+        const { fechaUltimoParto, ...gynecologyRest } = gynecology;
         await tx.consultationGynecology.upsert({
           where: { consultationId: id },
           create: { 
-            ...gynecology, 
+            ...gynecologyRest,
             consultationId: id,
-            fum: gynecology.fum ? new Date(gynecology.fum) : null,
-            fpp: gynecology.fpp ? new Date(gynecology.fpp) : null,
-            papUltimo: gynecology.papUltimo ? new Date(gynecology.papUltimo) : null,
-            fechaUltimoParto: gynecology.fechaUltimoParto ? new Date(gynecology.fechaUltimoParto) : null
+            fum: parseDateSafely(gynecology.fum),
+            fpp: parseDateSafely(gynecology.fpp),
+            papUltimo: parseDateSafely(gynecology.papUltimo)
           },
           update: {
-            ...gynecology,
-            fum: gynecology.fum ? new Date(gynecology.fum) : null,
-            fpp: gynecology.fpp ? new Date(gynecology.fpp) : null,
-            papUltimo: gynecology.papUltimo ? new Date(gynecology.papUltimo) : null,
-            fechaUltimoParto: gynecology.fechaUltimoParto ? new Date(gynecology.fechaUltimoParto) : null
+            ...gynecologyRest,
+            fum: parseDateSafely(gynecology.fum),
+            fpp: parseDateSafely(gynecology.fpp),
+            papUltimo: parseDateSafely(gynecology.papUltimo)
           }
         });
       }
@@ -826,14 +845,14 @@ app.post('/api/consultations', async (req, res) => {
 
       // 3. Guardar Ginecología
       if (gynecology) {
+        const { fechaUltimoParto, ...gynecologyRest } = gynecology;
         await tx.consultationGynecology.create({
           data: { 
-            ...gynecology, 
+            ...gynecologyRest, 
             consultationId: consultation.id,
-            fum: gynecology.fum ? new Date(gynecology.fum) : null,
-            fpp: gynecology.fpp ? new Date(gynecology.fpp) : null,
-            papUltimo: gynecology.papUltimo ? new Date(gynecology.papUltimo) : null,
-            fechaUltimoParto: gynecology.fechaUltimoParto ? new Date(gynecology.fechaUltimoParto) : null
+            fum: parseDateSafely(gynecology.fum),
+            fpp: parseDateSafely(gynecology.fpp),
+            papUltimo: parseDateSafely(gynecology.papUltimo)
           }
         });
       }
@@ -1179,7 +1198,408 @@ app.delete('/api/medical-orders/:orderId/results/:resultId', async (req, res) =>
   }
 });
 
+// Eliminar una orden médica completa
+app.delete('/api/medical-orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Buscar todos los resultados asociados para eliminar sus archivos físicos
+    const results = await prisma.orderResult.findMany({
+      where: { orderId: id }
+    });
+
+    for (const result of results) {
+      const filePath = path.join(__dirname, '..', result.url);
+      if (fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (err) {
+          console.error(`Error al eliminar archivo físico ${filePath}:`, err);
+        }
+      }
+    }
+
+    // Eliminar la orden (ítems y registros de resultados se eliminan por cascade en BD)
+    await prisma.medicalOrder.delete({
+      where: { id }
+    });
+
+    res.status(204).send();
+  } catch (error: any) {
+    console.error('Error al eliminar la orden médica:', error);
+    res.status(500).json({ error: 'Error al eliminar la orden médica' });
+  }
+});
+
+
+// ==========================================
+// MÓDULO DE EMBARAZOS Y OBSTETRICIA
+// ==========================================
+
+// Helper: calcular FPP con Regla de Naegele
+function calcularFPP(fum: Date): Date {
+  const fpp = new Date(fum);
+  fpp.setDate(fpp.getDate() + 7);
+  fpp.setMonth(fpp.getMonth() - 3);
+  fpp.setFullYear(fpp.getFullYear() + 1);
+  return fpp;
+}
+
+// Helper: calcular EG en semanas
+function calcularEG(fum: Date): number {
+  const hoy = new Date();
+  const diffMs = hoy.getTime() - fum.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  return parseFloat((diffDays / 7).toFixed(1));
+}
+
+// Helper: calcular nivel de riesgo
+function calcularNivelRiesgo(score: number): string {
+  if (score === 0) return 'sin_riesgo';
+  if (score <= 3)  return 'bajo';
+  if (score <= 7)  return 'alto';
+  return 'muy_alto';
+}
+
+// ─── Embarazos ────────────────────────────────────────────────────────────────
+
+// Lista todos los embarazos de una paciente
+app.get('/api/patients/:patientId/pregnancies', async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
+    const patient = await prisma.patient.findFirst({
+      where: isUUID ? { id: patientId } : { numeroDocumento: patientId }
+    });
+    if (!patient) return res.status(404).json({ message: 'Paciente no encontrada' });
+
+    const pregnancies = await prisma.pregnancy.findMany({
+      where: { patientId: patient.id },
+      include: {
+        controls: { orderBy: { controlDate: 'desc' }, take: 1 },
+        risks: true,
+        _count: { select: { controls: true, echographies: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(pregnancies);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener embarazos' });
+  }
+});
+
+// Lista de embarazos activos (para dashboard de obstetricia)
+app.get('/api/pregnancies/active-list', async (req, res) => {
+  try {
+    const pregnancies = await prisma.pregnancy.findMany({
+      where: { status: 'activo' },
+      include: {
+        patient: { select: { id: true, nombres: true, apellidos: true, numeroDocumento: true, fechaNacimiento: true, tipoSanguineo: true, alergias: true } },
+        controls: { orderBy: { controlDate: 'desc' }, take: 1 },
+        _count: { select: { controls: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(pregnancies);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener lista de embarazos activos' });
+  }
+});
+
+// Embarazo activo de una paciente
+app.get('/api/patients/:patientId/pregnancies/active', async (req, res) => {
+  try {
+    const { patientId } = req.params;
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientId);
+    const patient = await prisma.patient.findFirst({
+      where: isUUID ? { id: patientId } : { numeroDocumento: patientId }
+    });
+    if (!patient) return res.status(404).json({ message: 'Paciente no encontrada' });
+
+    const pregnancy = await prisma.pregnancy.findFirst({
+      where: { patientId: patient.id, status: 'activo' },
+      include: {
+        controls: { orderBy: { controlDate: 'desc' } },
+        risks: true,
+        echographies: { orderBy: { studyDate: 'desc' } }
+      }
+    });
+    if (!pregnancy) return res.status(404).json({ message: 'No hay embarazo activo' });
+    res.json(pregnancy);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener embarazo activo' });
+  }
+});
+
+// Detalle completo de un embarazo
+app.get('/api/pregnancies/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pregnancy = await prisma.pregnancy.findUnique({
+      where: { id },
+      include: {
+        patient: { select: { id: true, nombres: true, apellidos: true, numeroDocumento: true, fechaNacimiento: true, tipoSanguineo: true, alergias: true, antecedentes: true } },
+        controls: { orderBy: { controlDate: 'desc' } },
+        risks: { orderBy: { createdAt: 'asc' } },
+        echographies: { orderBy: { studyDate: 'desc' } }
+      }
+    });
+    if (!pregnancy) return res.status(404).json({ message: 'Embarazo no encontrado' });
+    res.json(pregnancy);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener embarazo' });
+  }
+});
+
+// Iniciar un nuevo embarazo
+app.post('/api/pregnancies', async (req, res) => {
+  try {
+    const { patientId, fum, initialWeight, initialHeight, bloodType, rh, notes } = req.body;
+    if (!patientId || !fum) return res.status(400).json({ error: 'patientId y fum son requeridos' });
+
+    // Verificar que no haya embarazo activo
+    const existing = await prisma.pregnancy.findFirst({
+      where: { patientId, status: 'activo' }
+    });
+    if (existing) return res.status(409).json({ error: 'La paciente ya tiene un embarazo activo', pregnancyId: existing.id });
+
+    const fumDate = parseDateSafely(fum);
+    if (!fumDate) return res.status(400).json({ error: 'La fecha FUM proporcionada no es válida' });
+    const fppDate = calcularFPP(fumDate);
+    const egInitial = calcularEG(fumDate);
+    const imc = initialWeight && initialHeight
+      ? parseFloat((initialWeight / Math.pow(initialHeight / 100, 2)).toFixed(1))
+      : undefined;
+
+    const pregnancy = await prisma.pregnancy.create({
+      data: {
+        patientId,
+        fum: fumDate,
+        fpp: fppDate,
+        egInitial,
+        initialWeight: initialWeight ? parseFloat(initialWeight) : undefined,
+        initialHeight: initialHeight ? parseFloat(initialHeight) : undefined,
+        initialImc: imc,
+        bloodType,
+        rh,
+        notes
+      },
+      include: { controls: true, risks: true, echographies: true }
+    });
+    res.status(201).json(pregnancy);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Error al crear embarazo' });
+  }
+});
+
+// Actualizar embarazo (estado, notas, etc.)
+app.patch('/api/pregnancies/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data: any = { ...req.body };
+    if (data.fum) {
+      const parsedFum = parseDateSafely(data.fum);
+      if (!parsedFum) return res.status(400).json({ error: 'La fecha FUM proporcionada no es válida' });
+      data.fum = parsedFum;
+    }
+    if (data.status === 'cerrado' && !data.closedAt) data.closedAt = new Date();
+
+    const pregnancy = await prisma.pregnancy.update({
+      where: { id },
+      data,
+      include: { controls: true, risks: true, echographies: true }
+    });
+    res.json(pregnancy);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar embarazo' });
+  }
+});
+
+// ─── Controles Prenatales ─────────────────────────────────────────────────────
+
+// Lista controles de un embarazo
+app.get('/api/pregnancies/:pregnancyId/controls', async (req, res) => {
+  try {
+    const { pregnancyId } = req.params;
+    const controls = await prisma.prenatalControl.findMany({
+      where: { pregnancyId },
+      orderBy: { controlDate: 'desc' }
+    });
+    res.json(controls);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener controles' });
+  }
+});
+
+// Registrar nuevo control prenatal
+app.post('/api/pregnancies/:pregnancyId/controls', async (req, res) => {
+  try {
+    const { pregnancyId } = req.params;
+    const {
+      controlDate, gestationalAge, maternalWeight, bloodPressure,
+      temperature, fetalHeartRate, uterineHeight, edema,
+      fetalMovements, contractions, observations, plan
+    } = req.body;
+
+    if (gestationalAge === undefined) return res.status(400).json({ error: 'gestationalAge es requerido' });
+
+    const control = await prisma.prenatalControl.create({
+      data: {
+        pregnancyId,
+        controlDate: controlDate ? new Date(controlDate) : new Date(),
+        gestationalAge: parseFloat(gestationalAge),
+        maternalWeight: maternalWeight ? parseFloat(maternalWeight) : undefined,
+        bloodPressure,
+        temperature: temperature ? parseFloat(temperature) : undefined,
+        fetalHeartRate: fetalHeartRate ? parseInt(fetalHeartRate) : undefined,
+        uterineHeight: uterineHeight ? parseInt(uterineHeight) : undefined,
+        edema,
+        fetalMovements,
+        contractions,
+        observations,
+        plan
+      }
+    });
+    res.status(201).json(control);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Error al registrar control' });
+  }
+});
+
+// Actualizar control prenatal
+app.patch('/api/prenatal-controls/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data: any = { ...req.body };
+    if (data.controlDate) data.controlDate = new Date(data.controlDate);
+    if (data.gestationalAge !== undefined) data.gestationalAge = parseFloat(data.gestationalAge);
+    if (data.maternalWeight !== undefined) data.maternalWeight = parseFloat(data.maternalWeight);
+    if (data.fetalHeartRate !== undefined) data.fetalHeartRate = parseInt(data.fetalHeartRate);
+    if (data.uterineHeight !== undefined) data.uterineHeight = parseInt(data.uterineHeight);
+
+    const control = await prisma.prenatalControl.update({ where: { id }, data });
+    res.json(control);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar control' });
+  }
+});
+
+// ─── Riesgos Obstétricos ──────────────────────────────────────────────────────
+
+// Lista riesgos de un embarazo
+app.get('/api/pregnancies/:pregnancyId/risks', async (req, res) => {
+  try {
+    const { pregnancyId } = req.params;
+    const risks = await prisma.pregnancyRisk.findMany({
+      where: { pregnancyId },
+      orderBy: { createdAt: 'asc' }
+    });
+    res.json(risks);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener riesgos' });
+  }
+});
+
+// Agregar factor de riesgo y recalcular nivel
+app.post('/api/pregnancies/:pregnancyId/risks', async (req, res) => {
+  try {
+    const { pregnancyId } = req.params;
+    const { riskName, riskScore, notes } = req.body;
+
+    const risk = await prisma.pregnancyRisk.create({
+      data: { pregnancyId, riskName, riskScore: parseInt(riskScore) || 1, notes }
+    });
+
+    // Recalcular score total y nivel del embarazo
+    const allRisks = await prisma.pregnancyRisk.findMany({ where: { pregnancyId } });
+    const totalScore = allRisks.reduce((sum, r) => sum + r.riskScore, 0);
+    const riskLevel = calcularNivelRiesgo(totalScore);
+    await prisma.pregnancy.update({ where: { id: pregnancyId }, data: { riskScore: totalScore, riskLevel } });
+
+    res.status(201).json(risk);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al agregar riesgo' });
+  }
+});
+
+// Eliminar factor de riesgo y recalcular
+app.delete('/api/pregnancy-risks/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const risk = await prisma.pregnancyRisk.findUnique({ where: { id } });
+    if (!risk) return res.status(404).json({ message: 'Riesgo no encontrado' });
+
+    await prisma.pregnancyRisk.delete({ where: { id } });
+
+    const remaining = await prisma.pregnancyRisk.findMany({ where: { pregnancyId: risk.pregnancyId } });
+    const totalScore = remaining.reduce((sum, r) => sum + r.riskScore, 0);
+    const riskLevel = calcularNivelRiesgo(totalScore);
+    await prisma.pregnancy.update({ where: { id: risk.pregnancyId }, data: { riskScore: totalScore, riskLevel } });
+
+    res.status(204).send();
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al eliminar riesgo' });
+  }
+});
+
+// ─── Ecografías ───────────────────────────────────────────────────────────────
+
+// Lista ecografías de un embarazo
+app.get('/api/pregnancies/:pregnancyId/echographies', async (req, res) => {
+  try {
+    const { pregnancyId } = req.params;
+    const echographies = await prisma.pregnancyEchography.findMany({
+      where: { pregnancyId },
+      orderBy: { studyDate: 'desc' }
+    });
+    res.json(echographies);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener ecografías' });
+  }
+});
+
+// Registrar nueva ecografía
+app.post('/api/pregnancies/:pregnancyId/echographies', upload.fields([
+  { name: 'pdf', maxCount: 1 },
+  { name: 'images', maxCount: 10 }
+]), async (req, res) => {
+  try {
+    const { pregnancyId } = req.params;
+    const { studyDate, studyType, gestationalAge, studyName, report, doctorName } = req.body;
+    const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+
+    const pdfUrl = files?.pdf?.[0]
+      ? `/uploads/results/${files.pdf[0].filename}`
+      : undefined;
+    const images = files?.images?.map(f => `/uploads/results/${f.filename}`) || [];
+
+    const echo = await prisma.pregnancyEchography.create({
+      data: {
+        pregnancyId,
+        studyDate: new Date(studyDate),
+        studyType: studyType || 'otro',
+        gestationalAge: gestationalAge ? parseFloat(gestationalAge) : undefined,
+        studyName,
+        report,
+        doctorName,
+        pdfUrl,
+        images
+      }
+    });
+    res.status(201).json(echo);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Error al registrar ecografía' });
+  }
+});
+
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Servidor clínico corriendo en http://0.0.0.0:${PORT}`);
   console.log('Rutas de órdenes registradas correctamente.');
+  console.log('Módulo de embarazos y obstetricia activo.');
 });
+

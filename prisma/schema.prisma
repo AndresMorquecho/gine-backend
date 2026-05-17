@@ -7,96 +7,197 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Patient {
-  id                String   @id @default(uuid())
-  nombres           String
-  apellidos         String
-  tipoDocumento     String   @default("DNI")
-  numeroDocumento   String   @unique
-  fechaNacimiento   DateTime
-  estadoCivil       String   @default("Soltera")
-  ocupacion         String?
-  telefono          String?
-  email             String?
-  direccion         String?
-  ciudad            String?
-  contactoEmergencia String?
-  telefonoEmergencia String?
-  tipoSanguineo     String?
-  alergias          String?
-  antecedentes      String?
-  seguroMedico      String?
-  menarquia         String?
-  metodoAnticonceptivo String?
-  vidaSexualActiva  String   @default("No")
-  gestas            Int      @default(0)
-  partos            Int      @default(0)
-  cesareas          Int      @default(0)
-  abortos           Int      @default(0)
-  fechaRegistro     DateTime @default(now())
-  observaciones     String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+// ==========================================
+// PACIENTES
+// ==========================================
 
-  consultations     Consultation[]
-  medicalOrders     MedicalOrder[]
+model Patient {
+  id                   String   @id @default(uuid())
+  nombres              String
+  apellidos            String
+  tipoDocumento        String   @default("DNI")
+  numeroDocumento      String   @unique
+  fechaNacimiento      DateTime
+  estadoCivil          String   @default("Soltera")
+  ocupacion            String?
+  telefono             String?
+  email                String?
+  direccion            String?
+  ciudad               String?
+  contactoEmergencia   String?
+  telefonoEmergencia   String?
+  tipoSanguineo        String?
+  alergias             String?
+  antecedentes         String?
+  seguroMedico         String?
+  menarquia            String?
+  metodoAnticonceptivo String?
+  vidaSexualActiva     String   @default("No")
+  fechaRegistro        DateTime @default(now())
+  observaciones        String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  consultations        Consultation[]
+  medicalOrders        MedicalOrder[]
+  pregnancies          Pregnancy[]
 
   @@map("patients")
 }
 
-model Consultation {
-  id              String   @id @default(uuid())
-  patientId       String
-  doctorId        String   @default("default-doctor")
-  date            DateTime @default(now())
-  type            String   @default("Consulta Ginecología")
-  reason          String?
-  evolution       String?
-  
-  vitalSigns      ConsultationVitalSigns?
-  gynecology      ConsultationGynecology?
-  treatment       ConsultationTreatment?
-  
-  diagnoses       ConsultationDiagnosis[]
-  documents       ConsultationDocument[]
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+// ==========================================
+// EMBARAZOS (Entidad longitudinal central)
+// ==========================================
 
-  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+model Pregnancy {
+  id            String    @id @default(uuid())
+  patientId     String
+  fum           DateTime
+  fpp           DateTime  // Calculado automáticamente (Regla de Naegele)
+  egInitial     Float?    // Semanas gestacionales al inicio
+  initialWeight Float?    // kg
+  initialHeight Float?    // cm
+  initialImc    Float?    // Calculado: weight/(height/100)^2
+
+  bloodType     String?
+  rh            String?
+
+  // Riesgo obstétrico acumulado
+  riskScore     Int     @default(0)
+  riskLevel     String  @default("sin_riesgo") // sin_riesgo | bajo | alto | muy_alto
+
+  // Estado del embarazo
+  status        String  @default("activo") // activo | cerrado | perdido | ectopico
+
+  notes         String?
+  createdAt     DateTime  @default(now())
+  closedAt      DateTime?
+
+  patient        Patient               @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  controls       PrenatalControl[]
+  risks          PregnancyRisk[]
+  echographies   PregnancyEchography[]
+
+  @@map("pregnancies")
+}
+
+// ==========================================
+// CONTROLES PRENATALES
+// ==========================================
+
+model PrenatalControl {
+  id             String   @id @default(uuid())
+  pregnancyId    String
+  controlDate    DateTime @default(now())
+  gestationalAge Float    // Semanas (ej: 24.2)
+  maternalWeight Float?   // kg
+  bloodPressure  String?  // "110/70"
+  temperature    Float?   // °C
+  fetalHeartRate Int?     // lpm (FCF)
+  uterineHeight  Int?     // cm (AU)
+  edema          String?  // "Ausente" | "+" | "++" | "+++"
+  fetalMovements String?  // "Presentes" | "Disminuidos" | "Ausentes"
+  contractions   String?  // "Ausentes" | "Irregulares" | "Regulares"
+  observations   String?
+  plan           String?
+  createdAt      DateTime @default(now())
+
+  pregnancy      Pregnancy @relation(fields: [pregnancyId], references: [id], onDelete: Cascade)
+
+  @@map("prenatal_controls")
+}
+
+// ==========================================
+// RIESGOS OBSTÉTRICOS
+// ==========================================
+
+model PregnancyRisk {
+  id          String   @id @default(uuid())
+  pregnancyId String
+  riskName    String
+  riskScore   Int      @default(1)
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  pregnancy   Pregnancy @relation(fields: [pregnancyId], references: [id], onDelete: Cascade)
+
+  @@map("pregnancy_risks")
+}
+
+// ==========================================
+// ECOGRAFÍAS OBSTÉTRICAS
+// ==========================================
+
+model PregnancyEchography {
+  id             String   @id @default(uuid())
+  pregnancyId    String
+  studyDate      DateTime
+  studyType      String   // morfologica | tamizaje | doppler | biofisico | transvaginal
+  gestationalAge Float?   // semanas al momento del estudio
+  studyName      String
+  report         String?  // texto del informe
+  doctorName     String?
+  pdfUrl         String?
+  images         String[] // array de URLs
+  createdAt      DateTime @default(now())
+
+  pregnancy      Pregnancy @relation(fields: [pregnancyId], references: [id], onDelete: Cascade)
+
+  @@map("pregnancy_echographies")
+}
+
+// ==========================================
+// CONSULTAS GINECOLÓGICAS GENERALES
+// ==========================================
+
+model Consultation {
+  id         String   @id @default(uuid())
+  patientId  String
+  doctorId   String   @default("default-doctor")
+  date       DateTime @default(now())
+  type       String   @default("Consulta Ginecología")
+  reason     String?
+  evolution  String?
+
+  vitalSigns ConsultationVitalSigns?
+  gynecology ConsultationGynecology?
+  treatment  ConsultationTreatment?
+
+  diagnoses  ConsultationDiagnosis[]
+  documents  ConsultationDocument[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  patient    Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
   @@map("consultations")
 }
 
+// Signos vitales maternos (SIN campos fetales — esos van en PrenatalControl)
 model ConsultationVitalSigns {
-  id              String   @id @default(uuid())
-  consultationId  String   @unique
-  weight          String?
-  height          String?
-  pressure        String?
-  heartRate       String?
-  respRate        String?
-  temp            String?
-  saturacion      String?
-  bmi             String?
-  
-  alturaUterina   String?
-  fcf             String?
-  movFetales      String?
-  edema           String?
-  contracciones   String?
+  id             String  @id @default(uuid())
+  consultationId String  @unique
+  weight         String?
+  height         String?
+  pressure       String?
+  heartRate      String?
+  respRate       String?
+  temp           String?
+  saturacion     String?
+  bmi            String?
 
-  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
   @@map("consultation_vital_signs")
 }
 
+// Ginecología pura (SIN campos obstétricos longitudinales — esos van en Pregnancy)
 model ConsultationGynecology {
   id                String   @id @default(uuid())
   consultationId    String   @unique
-  
-  fum               DateTime?
-  fpp               DateTime?
-  eg                String?
+
+  // Ciclo menstrual
   ciclo             Int      @default(28)
   duracion          Int      @default(5)
   regularidad       String   @default("Regular")
@@ -104,14 +205,12 @@ model ConsultationGynecology {
   vidaSexualActiva  Boolean  @default(true)
   sintomasMenstruales String?
 
-  gestas            Int      @default(0)
-  partos            Int      @default(0)
-  cesareas          Int      @default(0)
-  abortos           Int      @default(0)
-  hijosVivos        Int      @default(0)
-  ectopicos         Int      @default(0)
-  fechaUltimoParto  DateTime?
+  // FUM de referencia para esta consulta (puede diferir del embarazo activo)
+  fum               DateTime?
+  fpp               DateTime? // Solo para consultas sin embarazo registrado
+  eg                String?   // Solo para referencia rápida
 
+  // Antecedentes ginecológicos
   papUltimo         DateTime?
   papResultado      String?
   colposcopia       String?
@@ -122,6 +221,7 @@ model ConsultationGynecology {
   miomatosis        Boolean  @default(false)
   quistes           Boolean  @default(false)
 
+  // Síntomas del día
   dolorPelvico      Boolean  @default(false)
   dismenorrea       Boolean  @default(false)
   sangradoIrregular Boolean  @default(false)
@@ -131,97 +231,101 @@ model ConsultationGynecology {
 
   observaciones     String?
 
-  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  consultation      Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
   @@map("consultation_gynecology")
 }
 
 model ConsultationDiagnosis {
-  id              String   @id @default(uuid())
-  consultationId  String
-  code            String?
-  description     String
-  isPrimary       Boolean  @default(true)
+  id             String  @id @default(uuid())
+  consultationId String
+  code           String?
+  description    String
+  isPrimary      Boolean @default(true)
 
-  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
   @@map("consultation_diagnoses")
 }
 
 model ConsultationTreatment {
-  id              String   @id @default(uuid())
-  consultationId  String   @unique
-  plan            String?
-  followUp        String?
+  id             String  @id @default(uuid())
+  consultationId String  @unique
+  plan           String?
+  followUp       String?
 
-  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
   @@map("consultation_treatments")
 }
 
 model ConsultationDocument {
-  id              String   @id @default(uuid())
-  consultationId  String
-  name            String
-  url             String
-  type            String
-  createdAt       DateTime @default(now())
+  id             String   @id @default(uuid())
+  consultationId String
+  name           String
+  url            String
+  type           String
+  createdAt      DateTime @default(now())
 
-  consultation    Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+  consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
+
   @@map("consultation_documents")
 }
 
 // ==========================================
-// MÓDULO DE ÓRDENES Y EXÁMENES (PRO)
+// MÓDULO DE ÓRDENES Y EXÁMENES
 // ==========================================
 
 model OrderType {
-  id            String   @id @default(uuid())
-  name          String
-  slug          String   @unique
-  description   String?
-  icon          String?
-  color         String?
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  icon        String?
+  color       String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
 
-  categories    ExamCategory[]
-  orders        MedicalOrder[]
+  categories  ExamCategory[]
+  orders      MedicalOrder[]
 
   @@map("order_types")
 }
 
 model ExamCategory {
-  id            String   @id @default(uuid())
-  orderTypeId   String
-  name          String
-  description   String?
-  color         String?
-  icon          String?
-  sortOrder     Int      @default(0)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  id          String   @id @default(uuid())
+  orderTypeId String
+  name        String
+  description String?
+  color       String?
+  icon        String?
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
 
-  orderType     OrderType @relation(fields: [orderTypeId], references: [id], onDelete: Cascade)
-  exams         MedicalExam[]
+  orderType   OrderType    @relation(fields: [orderTypeId], references: [id], onDelete: Cascade)
+  exams       MedicalExam[]
 
   @@map("exam_categories")
 }
 
 model SampleType {
-  id            String   @id @default(uuid())
-  name          String
-  description   String?
+  id          String   @id @default(uuid())
+  name        String
+  description String?
 
-  exams         MedicalExam[]
+  exams       MedicalExam[]
 
   @@map("sample_types")
 }
 
 model ExamPreparation {
-  id            String   @id @default(uuid())
-  title         String
-  content       String
-  active        Boolean  @default(true)
+  id      String   @id @default(uuid())
+  title   String
+  content String
+  active  Boolean  @default(true)
 
-  exams         MedicalExam[] @relation("ExamToPreparation")
+  exams   MedicalExam[] @relation("ExamToPreparation")
 
   @@map("exam_preparations")
 }
@@ -240,8 +344,8 @@ model MedicalExam {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  category        ExamCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  sampleType      SampleType?  @relation(fields: [sampleTypeId], references: [id])
+  category        ExamCategory      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  sampleType      SampleType?       @relation(fields: [sampleTypeId], references: [id])
   preparations    ExamPreparation[] @relation("ExamToPreparation")
   orderItems      MedicalOrderItem[]
 
@@ -249,25 +353,25 @@ model MedicalExam {
 }
 
 model MedicalOrder {
-  id              String   @id @default(uuid())
-  patientId       String
-  orderTypeId     String
-  consultationId  String?
-  doctorId        String   @default("default-doctor")
-  secuencial      String   @unique
-  date            DateTime @default(now())
-  status          String   @default("Pendiente")
-  priority        String   @default("Normal")
-  observations    String?
-  diagnosis       String?
+  id            String   @id @default(uuid())
+  patientId     String
+  orderTypeId   String
+  consultationId String?
+  doctorId      String   @default("default-doctor")
+  secuencial    String   @unique
+  date          DateTime @default(now())
+  status        String   @default("Pendiente")
+  priority      String   @default("Normal")
+  observations  String?
+  diagnosis     String?
 
-  patient         Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  orderType       OrderType    @relation(fields: [orderTypeId], references: [id])
-  items           MedicalOrderItem[]
-  results         OrderResult[]
+  patient       Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  orderType     OrderType        @relation(fields: [orderTypeId], references: [id])
+  items         MedicalOrderItem[]
+  results       OrderResult[]
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@map("medical_orders")
 }
@@ -286,15 +390,15 @@ model OrderResult {
 }
 
 model MedicalOrderItem {
-  id              String   @id @default(uuid())
-  orderId         String
-  examId          String
-  status          String   @default("Pendiente")
-  resultUrl       String?
-  observations    String?
+  id           String  @id @default(uuid())
+  orderId      String
+  examId       String
+  status       String  @default("Pendiente")
+  resultUrl    String?
+  observations String?
 
-  order           MedicalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  exam            MedicalExam  @relation(fields: [examId], references: [id])
+  order        MedicalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  exam         MedicalExam  @relation(fields: [examId], references: [id])
 
   @@map("medical_order_items")
 }
