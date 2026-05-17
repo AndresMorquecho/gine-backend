@@ -5,6 +5,12 @@ import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
+import {
+  DEFAULT_SITE_CONFIG,
+  SITE_SETTINGS_ID,
+  mergeSiteConfigPatch,
+  normalizeSiteConfig,
+} from './site-config';
 
 dotenv.config();
 
@@ -13,7 +19,67 @@ const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+
+const BUSINESS_SETTINGS_ID = 'default';
+
+const defaultBusinessSettingsData = {
+  clinicName: null as string | null,
+  taxId: null as string | null,
+  address: null as string | null,
+  phone: null as string | null,
+  email: null as string | null,
+  logoUrl: null as string | null,
+  reportHeader: null as string | null,
+  reportFooter: null as string | null,
+  billingSeries: 'FAC',
+  billingNextNumber: 1,
+  currency: 'USD',
+};
+
+function serializeBusinessSettings(row: {
+  id: string;
+  clinicName: string | null;
+  taxId: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  logoUrl: string | null;
+  reportHeader: string | null;
+  reportFooter: string | null;
+  billingSeries: string | null;
+  billingNextNumber: number;
+  currency: string;
+}) {
+  return {
+    id: row.id,
+    clinicName: row.clinicName,
+    taxId: row.taxId,
+    address: row.address,
+    phone: row.phone,
+    email: row.email,
+    logoUrl: row.logoUrl,
+    reportHeader: row.reportHeader,
+    reportFooter: row.reportFooter,
+    billingSeries: row.billingSeries,
+    billingNextNumber: row.billingNextNumber,
+    currency: row.currency,
+  };
+}
+
+async function getOrCreateBusinessSettings() {
+  const existing = await prisma.businessSettings.findUnique({
+    where: { id: BUSINESS_SETTINGS_ID },
+  });
+  if (existing) return existing;
+
+  return prisma.businessSettings.create({
+    data: {
+      id: BUSINESS_SETTINGS_ID,
+      ...defaultBusinessSettingsData,
+    },
+  });
+}
 
 // Directorio de subidas
 const UPLOADS_DIR = path.join(__dirname, '../uploads');
@@ -1176,6 +1242,134 @@ app.delete('/api/medical-orders/:orderId/results/:resultId', async (req, res) =>
   } catch (error) {
     console.error('Error al eliminar resultado:', error);
     res.status(500).json({ error: 'Error al eliminar el archivo' });
+  }
+});
+
+// ==========================================
+// CONFIGURACIÓN DE LA LANDING (sitio público)
+// ==========================================
+
+async function getOrCreateSiteSettings() {
+  const existing = await prisma.siteSettings.findUnique({
+    where: { id: SITE_SETTINGS_ID },
+  });
+  if (existing) {
+    return {
+      ...existing,
+      config: normalizeSiteConfig(existing.config),
+    };
+  }
+
+  const config = normalizeSiteConfig(DEFAULT_SITE_CONFIG);
+  return prisma.siteSettings.create({
+    data: {
+      id: SITE_SETTINGS_ID,
+      config: config as object,
+    },
+  }).then((row) => ({
+    ...row,
+    config,
+  }));
+}
+
+app.get('/api/site-config', async (_req, res) => {
+  try {
+    const row = await getOrCreateSiteSettings();
+    res.json(normalizeSiteConfig(row.config));
+  } catch (error) {
+    console.error('Error al obtener configuración del sitio:', error);
+    res.status(500).json({ error: 'Error al obtener la configuración del sitio' });
+  }
+});
+
+app.post('/api/site-config', async (req, res) => {
+  try {
+    const currentRow = await getOrCreateSiteSettings();
+    const current = normalizeSiteConfig(currentRow.config);
+    const next = req.body?.reset === true
+      ? normalizeSiteConfig(DEFAULT_SITE_CONFIG)
+      : mergeSiteConfigPatch(current, req.body);
+
+    const saved = await prisma.siteSettings.upsert({
+      where: { id: SITE_SETTINGS_ID },
+      create: {
+        id: SITE_SETTINGS_ID,
+        config: next as object,
+      },
+      update: {
+        config: next as object,
+      },
+    });
+
+    res.json(normalizeSiteConfig(saved.config));
+  } catch (error) {
+    console.error('Error al guardar configuración del sitio:', error);
+    res.status(500).json({ error: 'Error al guardar la configuración del sitio' });
+  }
+});
+
+// ==========================================
+// CONFIGURACIÓN DE CLÍNICA
+// ==========================================
+
+app.get('/api/settings', async (_req, res) => {
+  try {
+    const settings = await getOrCreateBusinessSettings();
+    res.json(serializeBusinessSettings(settings));
+  } catch (error) {
+    console.error('Error al obtener configuración:', error);
+    res.status(500).json({ error: 'Error al obtener la configuración' });
+  }
+});
+
+app.post('/api/settings', async (req, res) => {
+  try {
+    const {
+      clinicName,
+      taxId,
+      address,
+      phone,
+      email,
+      logoUrl,
+      reportHeader,
+      reportFooter,
+      billingSeries,
+      billingNextNumber,
+      currency,
+    } = req.body ?? {};
+
+    const data: Record<string, unknown> = {};
+    if (clinicName !== undefined) data.clinicName = clinicName ?? null;
+    if (taxId !== undefined) data.taxId = taxId ?? null;
+    if (address !== undefined) data.address = address ?? null;
+    if (phone !== undefined) data.phone = phone ?? null;
+    if (email !== undefined) data.email = email ?? null;
+    if (logoUrl !== undefined) data.logoUrl = logoUrl ?? null;
+    if (reportHeader !== undefined) data.reportHeader = reportHeader ?? null;
+    if (reportFooter !== undefined) data.reportFooter = reportFooter ?? null;
+    if (billingSeries !== undefined) data.billingSeries = billingSeries ?? null;
+    if (billingNextNumber !== undefined) {
+      const parsed = Number(billingNextNumber);
+      data.billingNextNumber = Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 1;
+    }
+    if (currency !== undefined && typeof currency === 'string' && currency.trim()) {
+      data.currency = currency.trim();
+    }
+
+    const settings = await prisma.businessSettings.upsert({
+      where: { id: BUSINESS_SETTINGS_ID },
+      create: {
+        id: BUSINESS_SETTINGS_ID,
+        ...defaultBusinessSettingsData,
+        ...data,
+      },
+      update: data,
+    });
+
+    res.json(serializeBusinessSettings(settings));
+  } catch (error) {
+    console.error('Error al guardar configuración:', error);
+    res.status(500).json({ error: 'Error al guardar la configuración' });
   }
 });
 
