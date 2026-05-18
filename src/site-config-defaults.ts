@@ -47,6 +47,28 @@ export const DEFAULT_SITE_CONFIG = {
   ctaTitle: '¿Agendamos tu próxima cita?',
   ctaDescription: 'Accede al panel médico para explorar agenda, pacientes y consultas.',
   footerNotice: 'GineCare · Plataforma demo · No reemplaza atención médica presencial',
-} as const
+}
 
-export type SiteConfigPayload = typeof DEFAULT_SITE_CONFIG
+export interface SiteConfigPayload {
+  brandName: string;
+  brandTagline: string;
+  logoUrl: string;
+  heroImageUrl: string;
+  heroImageAlt: string;
+  heroBadge: string;
+  heroTitle: string;
+  heroDescription: string;
+  heroCaption: string;
+  servicesTitle: string;
+  servicesSubtitle: string;
+  serviceCards: {
+    id: string;
+    title: string;
+    description: string;
+    imageUrl?: string;
+    icon: string;
+  }[];
+  ctaTitle: string;
+  ctaDescription: string;
+  footerNotice: string;
+}

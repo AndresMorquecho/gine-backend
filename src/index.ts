@@ -5,6 +5,8 @@ import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
+import swaggerUi from 'swagger-ui-express';
+import { swaggerDocument } from './swagger';
 import {
   DEFAULT_SITE_CONFIG,
   SITE_SETTINGS_ID,
@@ -20,6 +22,9 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+
+// Host Swagger documentation at /api-docs
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 const BUSINESS_SETTINGS_ID = 'default';
 
@@ -412,7 +417,8 @@ app.get('/api/patients/:id', async (req, res) => {
             orderBy: { date: 'desc' },
             include: {
               vitalSigns: true,
-              gynecology: true
+              gynecology: true,
+              diagnoses: true
             }
           }
         }
@@ -428,7 +434,8 @@ app.get('/api/patients/:id', async (req, res) => {
             orderBy: { date: 'desc' },
             include: {
               vitalSigns: true,
-              gynecology: true
+              gynecology: true,
+              diagnoses: true
             }
           }
         }
@@ -478,7 +485,7 @@ app.post('/api/patients', async (req, res) => {
     const { gestas, partos, cesareas, abortos, ...rest } = data;
     const formattedData = {
       ...rest,
-      fechaNacimiento: data.fechaNacimiento ? new Date(data.fechaNacimiento) : new Date(),
+      fechaNacimiento: data.fechaNacimiento ? new Date(data.fechaNacimiento) : null,
       fechaRegistro: data.fechaRegistro ? new Date(data.fechaRegistro) : new Date(),
     };
 
@@ -498,7 +505,9 @@ app.patch('/api/patients/:id', async (req, res) => {
     // Prepare data if present
     const { gestas, partos, cesareas, abortos, ...rest } = data;
     const formattedData: any = { ...rest };
-    if (data.fechaNacimiento) formattedData.fechaNacimiento = new Date(data.fechaNacimiento);
+    if (data.fechaNacimiento !== undefined) {
+      formattedData.fechaNacimiento = data.fechaNacimiento ? new Date(data.fechaNacimiento) : null;
+    }
     if (data.fechaRegistro) formattedData.fechaRegistro = new Date(data.fechaRegistro);
 
     const patient = await prisma.patient.update({
@@ -514,10 +523,35 @@ app.patch('/api/patients/:id', async (req, res) => {
 app.delete('/api/patients/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // 1. Fetch patient first to get their UUID and numeroDocumento
+    const patient = await prisma.patient.findUnique({
+      where: { id }
+    });
+
+    if (patient) {
+      // 2. Cascade delete all prescriptions referencing this patient's UUID or document number
+      const patientIdOrDoc = [patient.id];
+      if (patient.numeroDocumento) {
+        patientIdOrDoc.push(patient.numeroDocumento);
+      }
+
+      await prisma.prescription.deleteMany({
+        where: {
+          patientId: {
+            in: patientIdOrDoc
+          }
+        }
+      });
+      console.log(`Programmatic cascade: deleted prescriptions for patient ${patient.nombres} ${patient.apellidos}`);
+    }
+
+    // 3. Delete the patient (which cascades to consultations, pregnancies, orders in Prisma)
     await prisma.patient.delete({ where: { id } });
     res.status(204).send();
-  } catch (error) {
-    res.status(500).json({ error: 'Error deleting patient' });
+  } catch (error: any) {
+    console.error('Error deleting patient:', error?.message);
+    res.status(500).json({ error: 'Error deleting patient', detail: error?.message });
   }
 });
 
@@ -720,11 +754,20 @@ app.get('/api/patients/:id/documents', async (req, res) => {
         order: {
           select: {
             secuencial: true,
+            consultationId: true,
             orderType: { select: { name: true } }
           }
         }
       }
     });
+
+    // Fetch consultations for orderResults to get their types
+    const orderConsultationIds = orderResults.map(r => r.order.consultationId).filter(Boolean) as string[];
+    const orderConsultations = await prisma.consultation.findMany({
+      where: { id: { in: orderConsultationIds } },
+      select: { id: true, type: true }
+    });
+    const orderConsultationMap = new Map(orderConsultations.map(c => [c.id, c.type]));
 
     // 3. Unificar ambos flujos
     const unifiedDocs = [
@@ -735,7 +778,9 @@ app.get('/api/patients/:id/documents', async (req, res) => {
         type: d.type,
         source: 'Consulta',
         createdAt: d.createdAt,
-        reference: d.consultation.type
+        reference: d.consultation.type,
+        consultationId: d.consultationId,
+        consultationType: d.consultation.type
       })),
       ...orderResults.map(r => ({
         id: r.id,
@@ -744,7 +789,9 @@ app.get('/api/patients/:id/documents', async (req, res) => {
         type: r.fileType,
         source: r.order.orderType?.name || 'Examen',
         createdAt: r.createdAt,
-        reference: `Orden Sec: ${r.order.secuencial}`
+        reference: `Orden Sec: ${r.order.secuencial}`,
+        consultationId: r.order.consultationId,
+        consultationType: r.order.consultationId ? (orderConsultationMap.get(r.order.consultationId) || null) : null
       }))
     ];
 
@@ -802,7 +849,9 @@ app.get('/api/consultations', async (req, res) => {
       motivo: c.reason,
       diagnostico: c.evolution, // O usar primer diagnóstico si existe
       proximaCita: c.treatment?.followUp || 'No programada',
-      estado: 'Finalizada'
+      estado: 'Finalizada',
+      date: c.date,
+      createdAt: c.createdAt
     }));
 
     res.json(formatted);
@@ -1164,7 +1213,21 @@ app.get('/api/medical-orders', async (req, res) => {
       orderBy: { date: 'desc' }
     });
     console.log(`Encontradas ${orders.length} órdenes.`);
-    res.json(orders);
+    
+    // Fetch associated consultations to include their type in the response
+    const consultationIds = orders.map(o => o.consultationId).filter(Boolean) as string[];
+    const consultations = await prisma.consultation.findMany({
+      where: { id: { in: consultationIds } },
+      select: { id: true, type: true }
+    });
+    const consultationMap = new Map(consultations.map(c => [c.id, c.type]));
+
+    const ordersWithConsultationType = orders.map(order => ({
+      ...order,
+      consultationType: order.consultationId ? (consultationMap.get(order.consultationId) || null) : null
+    }));
+
+    res.json(ordersWithConsultationType);
   } catch (error) {
     console.error('Error al listar órdenes:', error);
     res.status(500).json({ error: 'Error al listar órdenes' });
@@ -2029,6 +2092,26 @@ app.delete('/api/medicines/:id', async (req, res) => {
 // MÓDULO DE PRESCRIPCIONES / RECETAS
 // ==========================================
 
+// Genera el siguiente número de receta único garantizado
+app.get('/api/prescriptions/next-secuencial', async (req, res) => {
+  try {
+    const year = new Date().getFullYear();
+    const count = await prisma.prescription.count();
+    // Pad to 4 digits and check uniqueness with retry loop
+    let num = count + 1;
+    let secuencial = `REC-${year}-${String(num).padStart(4, '0')}`;
+    // Ensure it doesn't already exist (handles gaps/deletions)
+    while (await prisma.prescription.findFirst({ where: { secuencial } })) {
+      num++;
+      secuencial = `REC-${year}-${String(num).padStart(4, '0')}`;
+    }
+    res.json({ secuencial });
+  } catch (error: any) {
+    console.error('Error generating secuencial:', error?.message);
+    res.status(500).json({ error: 'Error generating secuencial' });
+  }
+});
+
 app.get('/api/prescriptions', async (req, res) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -2085,10 +2168,18 @@ app.get('/api/prescriptions', async (req, res) => {
 app.post('/api/prescriptions', async (req, res) => {
   try {
     const body = req.body;
+    const year = new Date().getFullYear();
+
+    // Guarantee unique secuencial — retry if collision detected
+    let secuencial = body.secuencial || `REC-${year}-0001`;
+    while (await prisma.prescription.findFirst({ where: { secuencial } })) {
+      const count = await prisma.prescription.count();
+      secuencial = `REC-${year}-${String(count + 1).padStart(4, '0')}`;
+    }
     
     const newPrescription = await prisma.prescription.create({
       data: {
-        secuencial: body.secuencial || body.id || `REC-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+        secuencial,
         date: body.date || new Date().toLocaleDateString('es-EC'),
         patientId: body.patientId,
         patientName: body.patientName,
@@ -2111,6 +2202,62 @@ app.post('/api/prescriptions', async (req, res) => {
   }
 });
 
+app.get('/api/prescriptions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const prescription = await prisma.prescription.findUnique({
+      where: { id }
+    });
+    if (!prescription) {
+      return res.status(404).json({ error: 'Receta no encontrada' });
+    }
+    res.json(prescription);
+  } catch (error: any) {
+    console.error('Error fetching prescription:', error?.message);
+    res.status(500).json({ error: 'Error fetching prescription', detail: error?.message });
+  }
+});
+
+app.patch('/api/prescriptions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body;
+    const updated = await prisma.prescription.update({
+      where: { id },
+      data: {
+        secuencial: body.secuencial,
+        date: body.date,
+        medicinesCount: body.medicinesCount || (body.medicines ? body.medicines.length : 0),
+        status: body.status,
+        medicines: body.medicines,
+        vigencia: body.vigencia,
+        vigenciaTipo: body.vigenciaTipo,
+        diagnostico: body.diagnostico,
+        cie10: body.cie10,
+        alergias: body.alergias,
+        doctor: body.doctor
+      }
+    });
+    res.json(updated);
+  } catch (error: any) {
+    console.error('Error updating prescription:', error?.message);
+    res.status(500).json({ error: 'Error updating prescription', detail: error?.message });
+  }
+});
+
+app.delete('/api/prescriptions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.prescription.delete({
+      where: { id }
+    });
+    res.status(204).send();
+  } catch (error: any) {
+    console.error('Error deleting prescription:', error?.message);
+    res.status(500).json({ error: 'Error deleting prescription', detail: error?.message });
+  }
+});
+
 /* ==================================================
    APPOINTMENTS (AGENDA) CRUD ENDPOINTS
    ================================================== */
@@ -2130,9 +2277,42 @@ app.get('/api/appointments', async (req, res) => {
   }
 });
 
+function timeToMinutes(timeStr: string): number {
+  if (!timeStr) return 0;
+  const parts = timeStr.split(':');
+  const hours = parseInt(parts[0], 10) || 0;
+  const minutes = parseInt(parts[1], 10) || 0;
+  return hours * 60 + minutes;
+}
+
 app.post('/api/appointments', async (req, res) => {
   try {
     const body = req.body;
+
+    // Check scheduling conflict (same doctor, same date, within 20 minutes, active status)
+    const existingActiveAppointments = await prisma.appointment.findMany({
+      where: {
+        date: body.date,
+        doctorName: body.doctorName,
+        status: {
+          notIn: ['Finalizada', 'Cancelada', 'No asistió']
+        }
+      }
+    });
+
+    const targetMinutes = timeToMinutes(body.time);
+    const conflict = existingActiveAppointments.find(app => {
+      const appMinutes = timeToMinutes(app.time);
+      return Math.abs(appMinutes - targetMinutes) < 20;
+    });
+
+    if (conflict) {
+      return res.status(409).json({
+        error: 'Conflict',
+        message: `Conflicto de horario: El ${body.doctorName} ya tiene una cita activa programada a las ${conflict.time} el día ${body.date}. El intervalo mínimo requerido entre citas es de 20 minutos.`
+      });
+    }
+
     const newAppointment = await prisma.appointment.create({
       data: {
         date: body.date,
@@ -2157,6 +2337,47 @@ app.patch('/api/appointments/:id', async (req, res) => {
     const { id } = req.params;
     const body = req.body;
     
+    // Check conflict excluding this appointment
+    const current = await prisma.appointment.findUnique({ where: { id } });
+    if (!current) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const checkDate = body.date !== undefined ? body.date : current.date;
+    const checkTime = body.time !== undefined ? body.time : current.time;
+    const checkDoctor = body.doctorName !== undefined ? body.doctorName : current.doctorName;
+    const checkStatus = body.status !== undefined ? body.status : current.status;
+
+    // Only run conflict check if the status remains active and doctor, date, or time changes,
+    // OR if changing status back to active when it was cancelled/finished.
+    const isTargetStatusActive = !['Finalizada', 'Cancelada', 'No asistió'].includes(checkStatus);
+    
+    if (isTargetStatusActive) {
+      const existingActiveAppointments = await prisma.appointment.findMany({
+        where: {
+          id: { not: id },
+          date: checkDate,
+          doctorName: checkDoctor,
+          status: {
+            notIn: ['Finalizada', 'Cancelada', 'No asistió']
+          }
+        }
+      });
+
+      const targetMinutes = timeToMinutes(checkTime);
+      const conflict = existingActiveAppointments.find(app => {
+        const appMinutes = timeToMinutes(app.time);
+        return Math.abs(appMinutes - targetMinutes) < 20;
+      });
+
+      if (conflict) {
+        return res.status(409).json({
+          error: 'Conflict',
+          message: `Conflicto de horario: El ${checkDoctor} ya tiene una cita activa programada a las ${conflict.time} el día ${checkDate}. El intervalo mínimo requerido entre citas es de 20 minutos.`
+        });
+      }
+    }
+
     // Build update payload dynamically
     const updateData: any = {};
     if (body.date !== undefined) updateData.date = body.date;
@@ -2192,9 +2413,279 @@ app.delete('/api/appointments/:id', async (req, res) => {
   }
 });
 
+/* ==================================================
+   USER & AUTHENTICATION ENDPOINTS
+   ================================================== */
+
+async function seedUsers() {
+  try {
+    const userCount = await prisma.user.count();
+    if (userCount === 0) {
+      console.log('--- SEEDING SYSTEM USERS ---');
+      await prisma.user.createMany({
+        data: [
+          {
+            username: 'admin',
+            email: 'admin@gineclinic.com',
+            password: 'dummypwd123',
+            nombres: 'Administrador',
+            apellidos: 'Principal',
+          },
+          {
+            username: 'dr-mora',
+            email: 'dr.mora@gineclinic.com',
+            password: 'dummypwd123',
+            nombres: 'Dr. Wilson',
+            apellidos: 'Mora',
+          },
+          {
+            username: 'dra-garcia',
+            email: 'dra.garcia@gineclinic.com',
+            password: 'dummypwd123',
+            nombres: 'Dra. Ana',
+            apellidos: 'García',
+          }
+        ]
+      });
+      console.log('3 usuarios demo creados exitosamente.');
+    }
+  } catch (error) {
+    console.error('Error seeding users:', error);
+  }
+}
+
+async function seedAppointments() {
+  try {
+    const count = await prisma.appointment.count();
+    if (count === 0) {
+      console.log('--- SEEDING SYSTEM APPOINTMENTS ---');
+      const todayStr = '2026-05-18';
+      await prisma.appointment.createMany({
+        data: [
+          {
+            date: todayStr,
+            time: '08:00',
+            patientName: 'Gabriela Mendoza',
+            patientAge: '28',
+            doctorName: 'Dra. Ana García',
+            reason: 'Control Prenatal',
+            type: 'Control',
+            status: 'Agendada'
+          },
+          {
+            date: todayStr,
+            time: '09:00',
+            patientName: 'María Fernanda Ruiz',
+            patientAge: '32',
+            doctorName: 'Dr. Wilson Mora',
+            reason: 'Ecografía Obstétrica',
+            type: 'Ecografía',
+            status: 'Confirmada'
+          },
+          {
+            date: todayStr,
+            time: '10:00',
+            patientName: 'Lucía Santos',
+            patientAge: '35',
+            doctorName: 'Dra. Ana García',
+            reason: 'Consulta Ginecológica de rutina',
+            type: 'Consulta',
+            status: 'Sala de espera'
+          }
+        ]
+      });
+      console.log('3 citas demo creadas exitosamente.');
+    }
+  } catch (error) {
+    console.error('Error seeding appointments:', error);
+  }
+}
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Nombre de usuario y contraseña son obligatorios' });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: username.trim() },
+          { email: username.trim() }
+        ]
+      }
+    });
+
+    if (!user || user.password !== password) {
+      return res.status(401).json({ error: 'Nombre de usuario o contraseña incorrectos' });
+    }
+
+    if (user.status === 'Suspendido') {
+      return res.status(403).json({ error: 'Su usuario está suspendido. Por favor, contacte al administrador.' });
+    }
+
+    res.json({
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      nombres: user.nombres,
+      apellidos: user.apellidos,
+      status: user.status
+    });
+  } catch (error: any) {
+    console.error('Error logging in:', error);
+    res.status(500).json({ error: 'Error interno en el servidor al iniciar sesión' });
+  }
+});
+
+app.get('/api/users', async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      orderBy: { createdAt: 'desc' }
+    });
+    const safeUsers = users.map(u => ({
+      id: u.id,
+      username: u.username,
+      email: u.email,
+      nombres: u.nombres,
+      apellidos: u.apellidos,
+      status: u.status,
+      createdAt: u.createdAt
+    }));
+    res.json(safeUsers);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Error al obtener la lista de usuarios' });
+  }
+});
+
+app.post('/api/users', async (req, res) => {
+  try {
+    const { username, email, password, nombres, apellidos } = req.body;
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: 'El nombre de usuario, correo electrónico y contraseña son obligatorios' });
+    }
+
+    // Verify email is present and not empty
+    if (!email.includes('@')) {
+      return res.status(400).json({ error: 'Debe ingresar un correo electrónico válido' });
+    }
+
+    // Check if username or email already exists
+    const existing = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { username: username.trim() },
+          { email: email.trim() }
+        ]
+      }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'El nombre de usuario o correo electrónico ya están registrados' });
+    }
+
+    const newUser = await prisma.user.create({
+      data: {
+        username: username.trim(),
+        email: email.trim(),
+        password,
+        nombres,
+        apellidos,
+        status: 'Activo'
+      }
+    });
+
+    res.status(201).json({
+      id: newUser.id,
+      username: newUser.username,
+      email: newUser.email,
+      nombres: newUser.nombres,
+      apellidos: newUser.apellidos,
+      status: newUser.status
+    });
+  } catch (error: any) {
+    console.error('Error creating user:', error);
+    res.status(500).json({ error: 'Error al registrar el usuario' });
+  }
+});
+
+app.put('/api/users/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { username, email, nombres, apellidos, status } = req.body;
+
+    if (!username || !email) {
+      return res.status(400).json({ error: 'El nombre de usuario y el correo electrónico son obligatorios' });
+    }
+
+    // Verify if username/email is taken by another user
+    const existing = await prisma.user.findFirst({
+      where: {
+        id: { not: id },
+        OR: [
+          { username: username.trim() },
+          { email: email.trim() }
+        ]
+      }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'El nombre de usuario o correo electrónico ya están registrados' });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id },
+      data: {
+        username: username.trim(),
+        email: email.trim(),
+        nombres,
+        apellidos,
+        status: status || 'Activo'
+      }
+    });
+
+    res.json({
+      id: updated.id,
+      username: updated.username,
+      email: updated.email,
+      nombres: updated.nombres,
+      apellidos: updated.apellidos,
+      status: updated.status
+    });
+  } catch (error) {
+    console.error('Error updating user:', error);
+    res.status(500).json({ error: 'Error al actualizar el usuario' });
+  }
+});
+
+app.patch('/api/users/:id/password', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password } = req.body;
+
+    if (!password || password.trim().length < 4) {
+      return res.status(400).json({ error: 'La contraseña debe tener al menos 4 caracteres' });
+    }
+
+    await prisma.user.update({
+      where: { id },
+      data: { password }
+    });
+
+    res.json({ success: true, message: 'Contraseña actualizada correctamente' });
+  } catch (error) {
+    console.error('Error changing user password:', error);
+    res.status(500).json({ error: 'Error al cambiar la contraseña del usuario' });
+  }
+});
+
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`Servidor clínico corriendo en http://0.0.0.0:${PORT}`);
   console.log('Rutas de órdenes registradas correctamente.');
   console.log('Módulo de embarazos y obstetricia activo.');
+  void seedUsers();
+  // void seedAppointments(); // Deshabilitado para permitir base de datos 100% vacía en pruebas
 });
 

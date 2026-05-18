@@ -17,7 +17,7 @@ model Patient {
   apellidos            String
   tipoDocumento        String   @default("DNI")
   numeroDocumento      String   @unique
-  fechaNacimiento      DateTime
+  fechaNacimiento      DateTime?
   estadoCivil          String   @default("Soltera")
   ocupacion            String?
   telefono             String?
@@ -171,6 +171,8 @@ model Consultation {
 
   patient    Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
+  @@index([patientId, date(sort: Desc)])
+  @@index([date(sort: Desc)])
   @@map("consultations")
 }
 
@@ -245,6 +247,7 @@ model ConsultationDiagnosis {
 
   consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
 
+  @@index([consultationId])
   @@map("consultation_diagnoses")
 }
 
@@ -269,6 +272,7 @@ model ConsultationDocument {
 
   consultation   Consultation @relation(fields: [consultationId], references: [id], onDelete: Cascade)
 
+  @@index([consultationId])
   @@map("consultation_documents")
 }
 
@@ -373,6 +377,9 @@ model MedicalOrder {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  @@index([patientId, date(sort: Desc)])
+  @@index([consultationId])
+  @@index([status])
   @@map("medical_orders")
 }
 
@@ -497,6 +504,22 @@ model Appointment {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  @@index([date, status])
   @@map("appointments")
 }
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  email     String   @unique
+  password  String
+  nombres   String?
+  apellidos String?
+  status    String   @default("Activo")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
 
